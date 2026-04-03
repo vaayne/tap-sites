@@ -1,0 +1,53 @@
+name: Sync scripts to D1
+on:
+  push:
+    branches: [main]
+    paths: ['sites/**']
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and push batch
+        run: |
+          python3 -c "
+          import json, os, hashlib, re
+
+          scripts = []
+          for site in sorted(os.listdir('sites')):
+            site_dir = os.path.join('sites', site)
+            if not os.path.isdir(site_dir): continue
+            for f in sorted(os.listdir(site_dir)):
+              if not f.endswith('.js'): continue
+              content = open(os.path.join(site_dir, f)).read()
+              name = site + '/' + f.removesuffix('.js')
+              h = hashlib.sha256(content.encode()).hexdigest()[:16]
+              # Parse @meta block
+              meta = {}
+              m = re.search(r'/\*\s*@meta\s*(\{.*?\})\s*\*/', content, re.DOTALL)
+              if m:
+                try: meta = json.loads(m.group(1))
+                except: pass
+              scripts.append({
+                'name': meta.get('name', name),
+                'site': site,
+                'description': meta.get('description', ''),
+                'domain': meta.get('domain', ''),
+                'args': json.dumps(meta.get('args', {})),
+                'readOnly': meta.get('readOnly', True),
+                'example': meta.get('example', ''),
+                'content': content,
+                'hash': h,
+              })
+          print(json.dumps({'scripts': scripts}))
+          " > /tmp/batch.json
+
+          echo "Built batch with $(python3 -c "import json; print(len(json.load(open('/tmp/batch.json'))['scripts']))" ) scripts"
+
+          curl -sf -X POST '${{ vars.TAP_API_URL }}/api/batch' \
+            -H 'Content-Type: application/json' \
+            -H 'X-Tap-Secret: ${{ secrets.TAP_SCRIPTS_SECRET }}' \
+            -d @/tmp/batch.json
